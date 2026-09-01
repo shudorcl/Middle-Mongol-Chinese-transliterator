@@ -646,7 +646,7 @@ export default function Home() {
                   aria-pressed={mode === "english"}
                   onClick={() => setMode("english")}
                 >
-                  英文近似
+                  真·英文近似
                 </button>
               </div>
             </div>
