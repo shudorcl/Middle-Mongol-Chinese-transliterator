@@ -31,7 +31,7 @@ test("server-renders the transliteration workbench", async () => {
   assert.match(html, /中古蒙漢音譯器/);
   assert.match(html, /学术转写/);
   assert.match(html, /罗马音近似/);
-  assert.match(html, /真·英文近似/);
+  assert.match(html, /英文近似/);
   assert.match(html, /秣驎/);
   assert.match(html, /29<\/span>/);
   assert.doesNotMatch(html, /codex-preview|SkeletonPreview|react-loading-skeleton/);

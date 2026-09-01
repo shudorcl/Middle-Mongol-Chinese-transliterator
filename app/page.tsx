@@ -580,7 +580,6 @@ export default function Home() {
           <div className="seal" aria-hidden="true">譯</div>
           <div>
             <h1>中古蒙漢音譯器</h1>
-            <p>對音表試行版 3-18v</p>
           </div>
         </div>
 
@@ -646,7 +645,7 @@ export default function Home() {
                   aria-pressed={mode === "english"}
                   onClick={() => setMode("english")}
                 >
-                  真·英文近似
+                  英文近似
                 </button>
               </div>
             </div>
