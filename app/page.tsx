@@ -5,7 +5,9 @@ import {
   BookOpen,
   Check,
   Clipboard,
+  Info,
   ListTree,
+  LoaderCircle,
   RotateCcw,
   Search,
   TriangleAlert,
@@ -17,8 +19,20 @@ import {
   SPECIAL_TRANSLATIONS,
 } from "./transliteration-data";
 
-type Mode = "roman" | "english";
+type Mode = "roman" | "romanApprox" | "english";
 type Tab = "transliterate" | "table" | "special";
+
+type Pronunciation = {
+  arpabet: string;
+  ipa: string;
+};
+
+type PronunciationEntry = {
+  word: string;
+  pronunciations: Pronunciation[];
+};
+
+type PronunciationEntries = Record<string, PronunciationEntry>;
 
 type OutputUnit = {
   id: string;
@@ -160,9 +174,9 @@ function parseRomanSegment(segment: string) {
   return mergeUnknownUnits(solve(0).units);
 }
 
-type EnglishDraft = { onset: string; rhyme: string };
+type PhoneticDraft = { onset: string; rhyme: string };
 
-function mapEnglishVowels(group: string) {
+function mapRomanApproxVowels(group: string) {
   if (/oi|oy/.test(group)) return "oi";
   if (/ou|ow|au|aw/.test(group)) return "au";
   if (/ai|ay|ei|ey|igh/.test(group)) return "ai";
@@ -172,7 +186,7 @@ function mapEnglishVowels(group: string) {
   return first === "y" ? "i" : first;
 }
 
-function normalizeEnglishLetters(word: string) {
+function normalizeRomanApproxLetters(word: string) {
   return word
     .normalize("NFD")
     .replace(/\p{M}/gu, "")
@@ -199,11 +213,11 @@ function normalizeEnglishLetters(word: string) {
     .replace(/[^a-zčǰšŋ]/g, "");
 }
 
-function englishOnset(consonant: string) {
+function approximateOnset(consonant: string) {
   return consonant === "ŋ" ? "g" : consonant;
 }
 
-function attachCoda(draft: EnglishDraft | undefined, consonant: string) {
+function attachCoda(draft: PhoneticDraft | undefined, consonant: string) {
   if (!draft || !["n", "m", "ŋ"].includes(consonant)) return false;
   const coda = consonant === "ŋ" ? "ng" : consonant;
   const combined = `${draft.rhyme}${coda}`;
@@ -212,13 +226,13 @@ function attachCoda(draft: EnglishDraft | undefined, consonant: string) {
   return true;
 }
 
-function englishSyllables(word: string) {
-  const normalized = normalizeEnglishLetters(word);
-  const drafts: EnglishDraft[] = [];
+function romanApproxSyllables(word: string) {
+  const normalized = normalizeRomanApproxLetters(word);
+  const drafts: PhoneticDraft[] = [];
   const nuclei = Array.from(normalized.matchAll(/[aeiouy]+/g));
 
   const emitEpenthetic = (consonant: string) => {
-    drafts.push({ onset: englishOnset(consonant), rhyme: "a" });
+    drafts.push({ onset: approximateOnset(consonant), rhyme: "a" });
   };
 
   if (!nuclei.length) {
@@ -235,7 +249,7 @@ function englishSyllables(word: string) {
 
       const onset = cluster.at(-1) ?? "";
       cluster.slice(0, -1).forEach(emitEpenthetic);
-      drafts.push({ onset: englishOnset(onset), rhyme: mapEnglishVowels(match[0]) });
+      drafts.push({ onset: approximateOnset(onset), rhyme: mapRomanApproxVowels(match[0]) });
       cursor = start + match[0].length;
     });
 
@@ -257,8 +271,132 @@ function englishSyllables(word: string) {
         item.rhyme.variants.includes(draft.rhyme),
     );
     if (!definition) return unknownUnit(`${draft.onset}${draft.rhyme}`);
-    return unitFromDefinition(definition.text, definition, "英文近似");
+    return unitFromDefinition(definition.text, definition, "罗马音估读");
   });
+}
+
+const ARPA_VOWEL_TO_RHYME: Record<string, string> = {
+  AA: "a",
+  AE: "a",
+  AH: "a",
+  AO: "o",
+  AW: "au",
+  AY: "ai",
+  EH: "e",
+  ER: "e",
+  EY: "ei",
+  IH: "i",
+  IY: "i",
+  OW: "o",
+  OY: "oi",
+  UH: "u",
+  UW: "u",
+};
+
+const ARPA_CONSONANT_TO_TARGET: Record<string, string> = {
+  B: "b",
+  CH: "č",
+  D: "d",
+  DH: "d",
+  F: "p",
+  G: "g",
+  HH: "x",
+  JH: "ǰ",
+  K: "k",
+  L: "l",
+  M: "m",
+  N: "n",
+  NG: "ŋ",
+  P: "p",
+  R: "l",
+  S: "s",
+  SH: "š",
+  T: "t",
+  TH: "t",
+  V: "b",
+  W: "y",
+  Y: "y",
+  Z: "s",
+  ZH: "ǰ",
+};
+
+function arpaBase(token: string) {
+  return token.replace(/[012]/g, "");
+}
+
+function resolvePhoneticDraft(draft: PhoneticDraft, note: string) {
+  const definition = syllableDefinitions.find(
+    (item) =>
+      item.text === `${draft.onset}${draft.rhyme}` &&
+      item.rhyme.variants.includes(draft.rhyme),
+  );
+  if (!definition) return unknownUnit(`${draft.onset}${draft.rhyme}`);
+  return unitFromDefinition(definition.text, definition, note);
+}
+
+function arpabetSyllables(pronunciation: string) {
+  const phonemes = pronunciation.split(/\s+/).filter(Boolean);
+  const vowelIndexes = phonemes
+    .map((token, index) => (ARPA_VOWEL_TO_RHYME[arpaBase(token)] ? index : -1))
+    .filter((index) => index >= 0);
+  const drafts: PhoneticDraft[] = [];
+
+  const emitEpenthetic = (consonant: string) => {
+    const onset = consonant === "ŋ" ? "g" : consonant;
+    drafts.push({ onset, rhyme: "a" });
+  };
+
+  if (!vowelIndexes.length) {
+    phonemes
+      .map((token) => ARPA_CONSONANT_TO_TARGET[arpaBase(token)])
+      .filter(Boolean)
+      .forEach(emitEpenthetic);
+  } else {
+    let cursor = 0;
+    vowelIndexes.forEach((vowelIndex, nucleusIndex) => {
+      let cluster = phonemes
+        .slice(cursor, vowelIndex)
+        .map((token) => ARPA_CONSONANT_TO_TARGET[arpaBase(token)])
+        .filter(Boolean);
+
+      if (nucleusIndex > 0 && cluster.length && attachCoda(drafts.at(-1), cluster[0])) {
+        cluster = cluster.slice(1);
+      }
+
+      const onset = cluster.at(-1) ?? "";
+      cluster.slice(0, -1).forEach(emitEpenthetic);
+      drafts.push({
+        onset: onset === "ŋ" ? "g" : onset,
+        rhyme: ARPA_VOWEL_TO_RHYME[arpaBase(phonemes[vowelIndex])],
+      });
+      cursor = vowelIndex + 1;
+    });
+
+    let trailing = phonemes
+      .slice(cursor)
+      .map((token) => ARPA_CONSONANT_TO_TARGET[arpaBase(token)])
+      .filter(Boolean);
+    const finalCoda = trailing.at(-1);
+    if (finalCoda && ["n", "m", "ŋ"].includes(finalCoda)) {
+      trailing = trailing.slice(0, -1);
+      trailing.forEach(emitEpenthetic);
+      if (!attachCoda(drafts.at(-1), finalCoda)) emitEpenthetic(finalCoda);
+    } else {
+      trailing.forEach(emitEpenthetic);
+    }
+  }
+
+  return drafts.map((draft) => resolvePhoneticDraft(draft, "CMUdict 发音映射"));
+}
+
+function englishWords(input: string) {
+  return Array.from(
+    new Set(
+      (input.match(/[A-Za-z]+(?:'[A-Za-z]+)?/g) ?? [])
+        .map((word) => word.toLocaleLowerCase())
+        .filter(Boolean),
+    ),
+  );
 }
 
 function specialUnit(source: string): DraftUnit | null {
@@ -278,15 +416,21 @@ function specialUnit(source: string): DraftUnit | null {
 function parseWord(word: string, mode: Mode) {
   const special = specialUnit(word);
   if (special) return [special];
-  if (mode === "english") return englishSyllables(word);
+  if (mode === "romanApprox") return romanApproxSyllables(word);
   return word
     .split(/['’ʼ]+/)
     .filter(Boolean)
     .flatMap(parseRomanSegment);
 }
 
-function parseInput(input: string, mode: Mode) {
-  const exactSpecial = specialUnit(input.trim());
+function parseInput(
+  input: string,
+  mode: Mode,
+  entries: PronunciationEntries,
+  pronunciationChoices: Record<string, number>,
+  lookupStatus: "idle" | "loading" | "ready" | "error",
+) {
+  const exactSpecial = mode === "english" ? null : specialUnit(input.trim());
   let sequence = 0;
   if (exactSpecial && input.trim().includes(" ")) {
     const unit = { ...exactSpecial, id: `unit-${sequence}` };
@@ -299,7 +443,21 @@ function parseInput(input: string, mode: Mode) {
 
   for (const chunk of chunks) {
     if (/^[\p{L}\p{M}'’ʼ]+$/u.test(chunk)) {
-      for (const draft of parseWord(chunk, mode)) {
+      const key = normalizeKey(chunk);
+      const pronunciation = entries[key]?.pronunciations[pronunciationChoices[key] ?? 0];
+      const drafts = mode === "english"
+        ? pronunciation
+          ? arpabetSyllables(pronunciation.arpabet)
+          : [{
+              ...unknownUnit(chunk),
+              note: lookupStatus === "loading"
+                ? "查询发音中"
+                : lookupStatus === "error"
+                  ? "词典连接失败"
+                  : "CMUdict 未收录",
+            }]
+        : parseWord(chunk, mode);
+      for (const draft of drafts) {
         const unit = { ...draft, id: `unit-${sequence++}` };
         units.push(unit);
         parts.push({ type: "unit", unit });
@@ -314,7 +472,7 @@ function parseInput(input: string, mode: Mode) {
 
 const EXAMPLES: { label: string; value: string; mode: Mode }[] = [
   { label: "morin", value: "morin", mode: "roman" },
-  { label: "ongqan", value: "ongqan", mode: "roman" },
+  { label: "Kublai", value: "Kublai", mode: "romanApprox" },
   { label: "Alexander", value: "Alexander", mode: "english" },
 ];
 
@@ -325,8 +483,16 @@ export default function Home() {
   const [choices, setChoices] = useState<Record<string, string>>({});
   const [copied, setCopied] = useState(false);
   const [indexQuery, setIndexQuery] = useState("");
+  const [pronunciationEntries, setPronunciationEntries] = useState<PronunciationEntries>({});
+  const [pronunciationChoices, setPronunciationChoices] = useState<Record<string, number>>({});
+  const [lookupStatus, setLookupStatus] = useState<"idle" | "loading" | "ready" | "error">("idle");
 
-  const parsed = useMemo(() => parseInput(input, mode), [input, mode]);
+  const lookupWords = useMemo(() => englishWords(input), [input]);
+  const lookupWordKey = lookupWords.join("\u0000");
+  const parsed = useMemo(
+    () => parseInput(input, mode, pronunciationEntries, pronunciationChoices, lookupStatus),
+    [input, lookupStatus, mode, pronunciationChoices, pronunciationEntries],
+  );
   const output = useMemo(
     () =>
       parsed.parts
@@ -347,6 +513,43 @@ export default function Home() {
     setChoices({});
     setCopied(false);
   }, [input, mode]);
+
+  useEffect(() => {
+    setPronunciationChoices({});
+    if (mode !== "english") {
+      setLookupStatus("idle");
+      return;
+    }
+    if (!lookupWords.length) {
+      setPronunciationEntries({});
+      setLookupStatus("ready");
+      return;
+    }
+
+    const controller = new AbortController();
+    const timer = window.setTimeout(async () => {
+      setLookupStatus("loading");
+      try {
+        const response = await fetch("/api/pronounce", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ words: lookupWords }),
+          signal: controller.signal,
+        });
+        if (!response.ok) throw new Error("Pronunciation lookup failed");
+        const data = await response.json() as { entries: PronunciationEntries };
+        setPronunciationEntries(data.entries);
+        setLookupStatus("ready");
+      } catch (error) {
+        if ((error as Error).name !== "AbortError") setLookupStatus("error");
+      }
+    }, 180);
+
+    return () => {
+      window.clearTimeout(timer);
+      controller.abort();
+    };
+  }, [lookupWordKey, mode]);
 
   const filteredRows = RHYME_ROWS.filter((row) => {
     const query = indexQuery.trim().toLocaleLowerCase();
@@ -431,6 +634,14 @@ export default function Home() {
                 </button>
                 <button
                   type="button"
+                  className={mode === "romanApprox" ? "selected" : ""}
+                  aria-pressed={mode === "romanApprox"}
+                  onClick={() => setMode("romanApprox")}
+                >
+                  罗马音近似
+                </button>
+                <button
+                  type="button"
                   className={mode === "english" ? "selected" : ""}
                   aria-pressed={mode === "english"}
                   onClick={() => setMode("english")}
@@ -444,7 +655,13 @@ export default function Home() {
               <textarea
                 value={input}
                 onChange={(event) => setInput(event.target.value.slice(0, 240))}
-                placeholder={mode === "roman" ? "morin / ongqan" : "Alexander"}
+                placeholder={
+                  mode === "roman"
+                    ? "morin / ongqan"
+                    : mode === "romanApprox"
+                      ? "Kublai"
+                      : "Alexander"
+                }
                 spellCheck={false}
                 aria-label="待音译文本"
               />
@@ -471,10 +688,61 @@ export default function Home() {
             <div className="mode-note">
               {mode === "roman" ? (
                 <><span>严格匹配</span><code>š · č · ǰ · γ · ö · ü · ē</code></>
+              ) : mode === "romanApprox" ? (
+                <>
+                  <span className="fun-label"><Info size={14} />并不严谨，仅供娱乐</span>
+                  <code>{parsed.units.map((unit) => unit.normalized).join("-") || "—"}</code>
+                </>
               ) : (
-                <><span>近似转写</span><code>{parsed.units.map((unit) => unit.normalized).join("-") || "—"}</code></>
+                <>
+                  <span className="dictionary-label">
+                    {lookupStatus === "loading" && <LoaderCircle className="spin" size={14} />}
+                    基于CMUdict的北美英语IPA转写
+                  </span>
+                  <code>{parsed.units.map((unit) => unit.normalized).join("-") || "—"}</code>
+                </>
               )}
             </div>
+
+            {mode === "english" && lookupWords.length > 0 && (
+              <div className="pronunciation-panel" aria-live="polite">
+                {lookupWords.map((word) => {
+                  const pronunciations = pronunciationEntries[word]?.pronunciations ?? [];
+                  const selectedIndex = pronunciationChoices[word] ?? 0;
+                  return (
+                    <div className="pronunciation-row" key={word}>
+                      <strong>{word}</strong>
+                      {pronunciations.length > 1 ? (
+                        <select
+                          aria-label={`${word} 的英语读音`}
+                          value={selectedIndex}
+                          onChange={(event) =>
+                            setPronunciationChoices((current) => ({
+                              ...current,
+                              [word]: Number(event.target.value),
+                            }))
+                          }
+                        >
+                          {pronunciations.map((pronunciation, index) => (
+                            <option key={pronunciation.arpabet} value={index}>
+                              /${pronunciation.ipa}/
+                            </option>
+                          ))}
+                        </select>
+                      ) : (
+                        <code title={pronunciations[0]?.arpabet}>
+                          {lookupStatus === "loading"
+                            ? "查询中"
+                            : pronunciations[0]
+                              ? `/${pronunciations[0].ipa}/`
+                              : "未收录"}
+                        </code>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
           </div>
 
           <div className="output-pane">
